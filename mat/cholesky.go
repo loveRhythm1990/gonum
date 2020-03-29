@@ -9,6 +9,7 @@ import (
 
 	"gonum.org/v1/gonum/blas"
 	"gonum.org/v1/gonum/blas/blas64"
+	glapack "gonum.org/v1/gonum/lapack/gonum"
 	"gonum.org/v1/gonum/lapack/lapack64"
 )
 
@@ -20,6 +21,9 @@ const (
 var (
 	_ Matrix    = (*Cholesky)(nil)
 	_ Symmetric = (*Cholesky)(nil)
+
+	// _ Matrix    = (*BandCholesky)(nil)
+	// _ SymBanded = (*BandCholesky)(nil)
 )
 
 // Cholesky is a symmetric positive definite matrix represented by its
@@ -696,4 +700,133 @@ func (c *Cholesky) SymRankOne(orig *Cholesky, alpha float64, x Vector) (ok bool)
 
 func (c *Cholesky) valid() bool {
 	return c.chol != nil && !c.chol.IsEmpty()
+}
+
+type BandCholesky struct {
+	// The chol pointer must never be retained as a pointer outside the Cholesky
+	// struct, either by returning chol outside the struct or by setting it to
+	// a pointer coming from outside. The same prohibition applies to the data
+	// slice within chol.
+	chol *TriBandDense
+	cond float64
+}
+
+func (c *BandCholesky) Factorize(a SymBanded) (ok bool) {
+	n, k := a.SymBand()
+	if c.chol == nil {
+		c.chol = NewTriBandDense(n, k, Upper, nil)
+	} else {
+		c.chol.Reset()
+		c.chol.ReuseAsTriBand(n, k, Upper)
+	}
+	copySymBandIntoTriBand(c.chol, a)
+	cSym := blas64.SymmetricBand{
+		Uplo:   blas.Upper,
+		N:      n,
+		K:      k,
+		Data:   c.chol.RawTriBand().Data,
+		Stride: c.chol.RawTriBand().Stride,
+	}
+	_, ok = lapack64.Pbtrf(cSym)
+	if !ok {
+		c.Reset()
+		return false
+	}
+	work := getFloats(3*n, false)
+	iwork := getInts(n, false)
+	aNorm := glapack.Implementation{}.Dlansb(CondNorm, cSym.Uplo, cSym.N, cSym.K, cSym.Data, cSym.Stride, work)
+	c.cond = 1 / lapack64.Pbcon(cSym, aNorm, work, iwork)
+	putInts(iwork)
+	putFloats(work)
+	return true
+}
+
+func (ch *BandCholesky) SolveTo(dst *Dense, b Matrix) error {
+	if !ch.valid() {
+		panic(badCholesky)
+	}
+	br, bc := b.Dims()
+	if br != ch.chol.mat.N {
+		panic(ErrShape)
+	}
+	dst.reuseAsNonZeroed(br, bc)
+	if b != dst {
+		dst.Copy(b)
+	}
+	lapack64.Pbtrs(ch.chol.mat, dst.mat)
+	if ch.cond > ConditionTolerance {
+		return Condition(ch.cond)
+	}
+	return nil
+}
+
+func (ch *BandCholesky) SolveVecTo(dst *VecDense, b Vector) error {
+	if !ch.valid() {
+		panic(badCholesky)
+	}
+	n := ch.chol.mat.N
+	if br, bc := b.Dims(); br != n || bc != 1 {
+		panic(ErrShape)
+	}
+	switch bv := b.(type) {
+	case RawVectorer:
+		if dst != b {
+			dst.checkOverlap(bv.RawVector())
+		}
+		dst.reuseAsNonZeroed(n)
+		if dst != b {
+			dst.CopyVec(b)
+		}
+		lapack64.Pbtrs(ch.chol.mat, dst.asGeneral())
+		if ch.cond > ConditionTolerance {
+			return Condition(ch.cond)
+		}
+		return nil
+	default:
+		dst.reuseAsNonZeroed(n)
+		return ch.SolveTo(dst.asDense(), b)
+	}
+}
+
+func (ch *BandCholesky) Cond() float64 {
+	if !ch.valid() {
+		panic(badCholesky)
+	}
+	return ch.cond
+}
+
+func (c *BandCholesky) Reset() {
+	if c.chol != nil {
+		c.chol.Reset()
+	}
+	c.cond = math.Inf(1)
+}
+
+func (ch *BandCholesky) Dims() (r, c int) {
+	if !ch.valid() {
+		panic(badCholesky)
+	}
+	r, c = ch.chol.Dims()
+	return r, c
+}
+
+func (ch *BandCholesky) At(i, j int) float64 {
+	panic("not implemented")
+}
+
+func (ch *BandCholesky) T() Matrix {
+	return ch
+}
+
+func (ch *BandCholesky) Symmetric() int {
+	n, _ := ch.chol.Triangle()
+	return n
+}
+
+func (ch *BandCholesky) IsEmpty() bool {
+	return ch == nil || ch.chol.IsEmpty()
+}
+
+func (ch *BandCholesky) valid() bool {
+	return ch.chol != nil && !ch.chol.IsEmpty()
 }
