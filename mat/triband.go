@@ -457,3 +457,64 @@ func (t *TriBandDense) Trace() float64 {
 	}
 	return tr
 }
+
+func copySymBandIntoTriBand(dst *TriBandDense, s SymBanded) {
+	n, k, upper := dst.TriBand()
+	ns, ks := s.SymBand()
+	if n != ns {
+		panic("mat: triangle size mismatch")
+	}
+	if k != ks {
+		panic("mat: triangle bandwidth mismatch")
+	}
+	t := dst.mat
+	sU, _ := untransposeExtract(s)
+	if sbd, ok := sU.(*SymBandDense); ok {
+		s := sbd.RawSymBand()
+		if upper {
+			if s.Uplo == blas.Upper {
+				for i := 0; i < n; i++ {
+					ilen := min(k+1, n-i)
+					copy(t.Data[i*t.Stride:i*t.Stride+ilen], s.Data[i*s.Stride:i*s.Stride+ilen])
+				}
+			} else {
+				// dst is upper triangular, s is in lower triangle.
+				for i := 0; i < n; i++ {
+					ilen := min(k+1, n-i)
+					for j := 0; j < ilen; j++ {
+						t.Data[i*t.Stride+j] = s.Data[(i+j)*s.Stride+k-j]
+					}
+				}
+			}
+		} else {
+			if s.Uplo == blas.Lower {
+				for i := 0; i < n; i++ {
+					istart := max(0, k-i)
+					copy(t.Data[i*t.Stride+istart:i*t.Stride+k+1], s.Data[i*s.Stride+istart:i*s.Stride+k+1])
+				}
+			} else {
+				// dst is lower triangular, s is in upper triangle.
+				for i := 0; i < n; i++ {
+					for j := max(0, k-i); j < k+1; j++ {
+						t.Data[i*t.Stride+j] = s.Data[(i-k+j)*s.Stride+k-j]
+					}
+				}
+			}
+		}
+		return
+	}
+	if upper {
+		for i := 0; i < n; i++ {
+			ilen := min(k+1, n-i)
+			for j := 0; j < ilen; j++ {
+				t.Data[i*t.Stride+j] = s.At(i+j, k-j)
+			}
+		}
+	} else {
+		for i := 0; i < n; i++ {
+			for j := max(0, k-i); j < k+1; j++ {
+				t.Data[i*t.Stride+j] = s.At(i-k+j, k-j)
+			}
+		}
+	}
+}
