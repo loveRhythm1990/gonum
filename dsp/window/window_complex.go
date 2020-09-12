@@ -330,6 +330,53 @@ func (g GaussianComplex) Transform(seq []complex128) []complex128 {
 	return seq
 }
 
+// Tukey can modify a sequence using the Tukey window and return the result.
+// See https://en.wikipedia.org/wiki/Window_function#Tukey_window
+// and https://prod-ng.sandia.gov/techlib-noauth/access-control.cgi/2017/174042.pdf page 88
+//
+// The Tukey window is an adjustible window. It can be thought of as something
+// between a rectangular and a Hann window, with a flat center and tapered edges.
+//
+// The properties of the window depend on the value of α (alpha). It controls
+// the fraction of the window which contains a cosine taper. α = 0.5 gives a
+// window whose central 50% is flat and outer quartiles are tapered. α = 1 is
+// equivalent to a Hann window. α = 0 is equivalent to a rectangular window.
+// 0 <= α <= 1; if α is outside the bounds, it is treated as 0 or 1.
+//
+// Spectral leakage parameters are summarized in the table:
+//         |  α=0.25 |  α=0.5 | α=0.75 |
+//  -------|---------------------------|
+//  ΔF_0   |   1.1   |   1.22 |   1.36 |
+//  ΔF_0.5 |   1.01  |   1.15 |   2.24 |
+//  K      |   1.13  |   1.3  |   2.5  |
+//  ɣ_max  | -14     | -15    | -19    |
+//  β      |  -1.11  |  -2.5  |  -4.01 |
+//
+// whose values are from A.D. Poularikas,
+// "The Handbook of Formulas and Tables for Signal Processing" table 7.1
+type TukeyComplex struct {
+	Alpha float64
+}
+
+// Transform applies the Tukey transformation to seq in place, using the value
+// of the receiver as the Alpha parameter, and returning the result
+func (t TukeyComplex) Transform(seq []complex128) []complex128 {
+	if t.Alpha <= 0 {
+		return RectangularComplex(seq)
+	} else if t.Alpha >= 1 {
+		return HannComplex(seq)
+	}
+
+	alphaL := t.Alpha * float64(len(seq)-1)
+	width := int(0.5*alphaL) + 1
+	for i := range seq[:width] {
+		w := complex(0.5*(1-math.Cos(2*math.Pi*float64(i)/alphaL)), 0)
+		seq[i] *= w
+		seq[len(seq)-1-i] *= w
+	}
+	return seq
+}
+
 // ValuesComplex is an arbitrary complex window function.
 type ValuesComplex []complex128
 
